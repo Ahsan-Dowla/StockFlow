@@ -1,0 +1,89 @@
+# StockFlow — Docker Compose Orchestration
+# Three-tier containerized application: PostgreSQL + Spring Boot + React/Nginx
+
+services:
+  # ─── PostgreSQL Database ───────────────────────────────────────────
+  db:
+    image: postgres:17-alpine
+    container_name: stockflow-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD in .env}
+      POSTGRES_DB: postgres
+      STOCKFLOW_DB_USERNAME: ${DB_USERNAME:-stockflow_app}
+      STOCKFLOW_DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+    volumes:
+      - stockflow-pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${DB_HOST_PORT:-5433}:5432"
+    networks:
+      - stockflow-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ─── Spring Boot Backend ───────────────────────────────────────────
+  backend:
+    build:
+      context: ./stockflow/backend
+      dockerfile: Dockerfile
+    container_name: stockflow-backend
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      DB_URL: jdbc:postgresql://db:5432/stockflow
+      DB_USERNAME: ${DB_USERNAME:-stockflow_app}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@stockflow.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+      ADMIN_NAME: ${ADMIN_NAME:-System Administrator}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
+    ports:
+      - "${BACKEND_PORT:-8090}:8090"
+    networks:
+      - stockflow-network
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # ─── React Frontend (Nginx) ───────────────────────────────────────
+  frontend:
+    build:
+      context: ./stockflow/frontend
+      dockerfile: Dockerfile
+    container_name: stockflow-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+    networks:
+      - stockflow-network
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+# ─── Shared Infrastructure ────────────────────────────────────────────
+networks:
+  stockflow-network:
+    driver: bridge
+
+volumes:
+  stockflow-pgdata:
+    name: stockflow-pgdata
